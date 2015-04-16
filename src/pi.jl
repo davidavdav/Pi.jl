@@ -149,6 +149,33 @@ function gaussLegendre_pi(ndigits::Integer)
 end
 
 function modpow(b, n::Integer, c)
+    ## wikipedia
+    r = 1
+    b %= c
+    while n>0
+        if isodd(n)
+            r = mod(r.*b, c)
+        end
+        n >>= 1
+        b = mod(b.*b, c)
+    end
+    return r
+    ## Bailey, Borwein, Borwein, Plouffe (incorrect?)
+    t = nextpow2(n+1) >> 1
+    r = 1
+    while true
+        if n ≥ t
+            r = (b*r) % c
+            n -= t
+        end
+        t = div(t,2)
+        if t < 1
+            break
+        end
+        r = (r*r) % c
+    end
+    return r
+    ## Straightforward (slow)
     r = 1
     while n>0
         r = (r*b) % c
@@ -159,30 +186,40 @@ end
 
 
 function bbp_pi_digit(n::Int)
+    if n==0
+        return 3
+    else
+        n -= 1
+    end
     o = [1, 4, 5, 6]
-    frac = zeros(4)
+    w = [4, -2, -1, -1]
+    frac = 0.
     for k=0:n
         for i=1:4
             den = 8k+o[i]
-            frac[i] += modpow(16, n-k, den) / den
+            frac += (w[i] * modpow(16, n-k, den)) / den
         end
     end
-    ifloor(mod(dot([4, -2, -1, -1], frac), 1) * 16)
+    ifloor(mod(frac, 1) * 16)::Int     
 end
 
-function bbp_pi(n::Int)
-    digits = Uint8[]
-    push!(digits, '3')
-    push!(digits, '.')
-    for i=1:n
-        digit = bbp_pi_digit(i-1)
+## The Borwein, Borwein and Plouffe formula of a hex digit of pi.
+## This can be run in parallel, and can start at any digit. 
+function bbp_pi(n::Int, start::Int=0)
+    digits = @parallel (vcat) for i = start + (0:n-1) 
+        digit = bbp_pi_digit(i)
         if digit < 10
-            push!(digits, '0'+digit)
+            d = '0'+digit
         else
-            push!(digits, 'a'+digit-10)
+            d = 'a'+digit-10
+        end
+        if i==0
+            uint8(vcat(d,'.'))
+        else
+            uint8(d)
         end
     end
-    ASCIIString(digits)
+    ASCIIString(vcat(digits))
 end
 
 
