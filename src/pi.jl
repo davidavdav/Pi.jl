@@ -1,19 +1,27 @@
-nbits(ndigits::Int) = iceil(Int, log(10)/log(2)*(ndigits+1))
+## pil.jl (c) 2015 David A. van Leeuwen and others
+## This file is licensed under the MIT software license.
+
+## Various algorithms to compute π in many (hexa)decimal digits.
+
+## We count digits after the period, e.g., for ndigits=2, π ≈ 3.14
+
+nbits(ndigits::Int) = iceil(Int, log(2,10) * (ndigits+1))
 
 ## Ivar Nesje, diverting problem to mpfr 
-function julia_pi(ndigits::Int)
+function mpfr_pi(ndigits::Int)
     with_bigfloat_precision(nbits(ndigits)) do
         big(π)
     end
 end
 
 ## seems to give identical result
-function julia_atan_pi(ndigits::Int)
+function atan_pi(ndigits::Int)
     with_bigfloat_precision(nbits(ndigits)) do
         4atan(BigFloat(1))
     end
 end
 
+## spigot.  This computes π one decimal digit at the time.  
 ## Adapted from Hans W Borgers:
 function spigot_pi(n)
     p = 0
@@ -34,7 +42,6 @@ function spigot_pi(n)
         end
         q, a[1] = divrem(a[1], 10)
         if q < 9
-            ## Pi *= string(p) * ("9"^no_nines)
             Pi[ci] = uint8('0')+p
             for i = 1:no_nines
                 Pi[ci+i] = uint8('9')
@@ -46,7 +53,6 @@ function spigot_pi(n)
             no_nines += 1
         elseif q == 10
             p += 1
-            ## Pi *= string(p) * ("0"^no_nines)
             Pi[ci] = uint('0')+p
             for i = 1:no_nines
                 Pi[ci+i] = uint8('0')
@@ -62,10 +68,10 @@ function spigot_pi(n)
     ASCIIString(Pi[1:n+2])
 end
 
-## from numerical recipes
+## from numerical recipes, Borwein & Borwein
 function borwein2_pi(ndigits::Int)
     with_bigfloat_precision(nbits(ndigits)) do
-        ɛ = BigFloat(10.) ^ -ndigits
+        ɛ = BigFloat(10) ^ -ndigits
         x = √ BigFloat(2)
         p = 2 + x
         y = sx = √x
@@ -87,7 +93,7 @@ function borwein_1984_pi(ndigits::Integer)
         ɛ = BigFloat(10) ^ -ndigits
         a = √ BigFloat(2)
         b = BigFloat(0)
-        p = a+2
+        p = a + 2
         while true
             lastp = p
             sa = √a
@@ -133,31 +139,33 @@ function gaussLegendre_pi(ndigits::Integer)
     with_bigfloat_precision(nbits(ndigits)) do
         n = iceil(log2(ndigits))
         a = BigFloat(1)
-        b = a / sqrt(BigFloat(2))
+        b = a / √ BigFloat(2)
         t = a / BigFloat(4)
         x = a
         while n > 0
             y = a
             a = (a + b) / 2
-            b = sqrt(b * y)
-            t = t - x * (y - a)^2
-            x = 2 * x
+            b = √(b * y)
+            t -= x * (y - a)^2
+            x *= 2 
             n -= 1
         end
         (a + b)^2 / (4 * t)
     end
 end
 
+
+## helper function for BBP alorithm
 function modpow(b, n::Integer, c)
     ## wikipedia
-    r = 1
+    r = 1 % c
     b %= c
     while n>0
         if isodd(n)
-            r = mod(r.*b, c)
+            r = (r*b) % c
         end
         n >>= 1
-        b = mod(b.*b, c)
+        b = (b*b) % c
     end
     return r
     ## Bailey, Borwein, Borwein, Plouffe (incorrect?)
@@ -184,15 +192,16 @@ function modpow(b, n::Integer, c)
     r
 end
 
-
+## compute 1 digit according to the Borwein, Borwein, and Plouffe algorithm.
+## http://crd-legacy.lbl.gov/~dhbailey/dhbpapers/pi-quest.pdf
 function bbp_pi_digit(n::Int)
     if n==0
         return 3
     else
         n -= 1
     end
-    o = [1, 4, 5, 6]
-    w = [4, -2, -1, -1]
+    const o = [1, 4, 5, 6]
+    const w = [4, -2, -1, -1]
     frac = 0.
     for k=0:n
         for i=1:4
@@ -204,9 +213,15 @@ function bbp_pi_digit(n::Int)
 end
 
 ## The Borwein, Borwein and Plouffe formula of a hex digit of pi.
-## This can be run in parallel, and can start at any digit. 
+## This can be run in parallel, and can start at any digit.
+## cf. table 3 from the publication: `bbp_pi(14, 10^6)`
 function bbp_pi(n::Int, start::Int=0)
-    digits = @parallel (vcat) for i = start + (0:n-1) 
+    if start==0
+        range = 0:n
+    else
+        range = start + (0:n-1)
+    end
+    digits = @parallel (vcat) for i in range
         digit = bbp_pi_digit(i)
         if digit < 10
             d = '0'+digit
@@ -222,7 +237,48 @@ function bbp_pi(n::Int, start::Int=0)
     ASCIIString(vcat(digits))
 end
 
+function bbp_pi_float(n::Int)
+    digits = @parallel (vcat) for i in 0:n
+        digit = bbp_pi_digit(i)
+        nibble = BitArray(4)
+        for i = 1:4
+            nibble[5-i] = isodd(digit)
+            digit >>= 1
+        end
+        nibble
+    end
+    bigfloat(digits, 2)
+end
 
+## This function interprets a bitvector as mantissa for a BigFloat number.
+## Admittedy, somewhat clumsy. 
+function bigfloat(x::BitVector, exp=1)
+    ## remove leading falses and reverse
+    nb = length(x)
+    x = reverse(x)
+    while length(x)>1 && !last(x)
+        pop!(x)
+    end
+    if length(x)==1
+        return with_bigfloat_precision(()->big(0.), nb)
+    end
+    ## shift bits until a leading true is found
+    nb = length(x)
+    firstbit = reinterpret(Uint, typemin(Int)) ## 0x8000000000000000
+    while last(x.chunks) & firstbit == 0
+        insert!(x, 1, false)
+    end
+    with_bigfloat_precision(nb) do
+        f = big(1.)
+        f.exp = exp
+        for i=1:length(x.chunks)
+            unsafe_store!(f.d, x.chunks[i], i)
+        end
+        return f
+    end
+end
+
+# Helper to check bbp algorithm, converts float to hexadecimal string. 
 function base16(x, n::Int)
     digits = Uint8[]
     nbefore = max(0,ifloor(log(16,x)))+1
